@@ -14,32 +14,30 @@
      _bse_'s example.
 */
 
-#define VERBOSE
-
-#include "Keyboard.h"
 #include "KeyControl.h"
+// Uncomment this header to enable DEBUG_MODE. Then, open the serial monitor.
+// #include "debug.h"
 
-// usually the rotary encoders three pins have the ground pin in the middle
-#define encoderPinA 2   // right
-#define encoderPinB 3   // left
+// Usually the rotary encoders three pins have the ground pin in the middle.
+// Orientation of left and right is correct if you are looking at the three-pin
+// side with the knob on top.
+#define encoderPinA 2   // left
+#define encoderPinB 3   // right
 
-volatile unsigned int encoderPos = 0;  // a counter for the dial
-unsigned int lastReportedPos = 1;      // change management
-
-// interrupt service routine vars
-boolean A_set = false;
-boolean B_set = false;
-
-// Control whether we read keyboard input. Helps us avoid runaway keyboard input
+// Enables/disables keyboard input. Helps prevent runaway keyboard input.
 #define keyboardSwitchPin 5
-KeyControl keyControl;
 
-void debugInterrupt(int digitalPin) {
-  Serial.print("Digital pin ");
-  Serial.print(digitalPin);
-  Serial.print(" -> Interrupt ");
-  Serial.println(digitalPinToInterrupt(digitalPin));
-}
+// Interrupt service routine vars. Used for debouncing.
+volatile boolean A_set = false;
+volatile boolean B_set = false;
+
+// Keeps track of the last time the rotary encoder interrupted us
+volatile unsigned long lastRotaryTurnTime = 0;
+// How long we should wait after the last rotary turn before releasing the key
+// 60 fps => 1000 ms / 60 frames => 16.667 ms / frame
+#define KEYBOARD_RELEASE_DELAY_MS 16
+
+KeyControl keyControl;
 
 void setup() {
   pinMode(encoderPinA, INPUT_PULLUP);
@@ -48,41 +46,71 @@ void setup() {
   attachInterrupt(digitalPinToInterrupt(encoderPinB), doEncoderB, CHANGE);
 
   pinMode(keyboardSwitchPin, INPUT_PULLUP);
+  lastRotaryTurnTime = millis();
 
+#ifdef DEBUG_MODE
   Serial.begin(9600);  // output
   while (!Serial);
+
   debugInterrupt(encoderPinA);
   debugInterrupt(encoderPinB);
+  printTime(lastRotaryTurnTime);
+
   Serial.println("start");
+#endif
 }
 
-// main loop, work is done by interrupt service routines, this one only prints
-// stuff
+// Actual work is done by interrupts further down. The main loop checks the
+// keyboard toggle switch and releases keypresses after a timeout.
 void loop() {
-  if (lastReportedPos != encoderPos) {
-    Serial.print("Index:");
-    Serial.println(encoderPos, DEC);
-    lastReportedPos = encoderPos;
-  }
+#ifdef DEBUG_MODE
+  printPosition();
+#endif
 
   switchKeyboard(digitalRead(keyboardSwitchPin));
+  maybeExpireKeyPress();
 }
 
-// If the switch is open, turn off keyboard
-// If the switch is closed, turn on keyboard
+// The switch line is pulled up (INPUT_PULLUP).
+// If the switch is open (voltage pulled HIGH), then turn off keyboard.
+// If the switch is closed (voltage pulled LOW), then turn on keyboard.
 void switchKeyboard(int keyboardPinState) {
   if (keyControl.isEnabled()) {
     if (keyboardPinState == HIGH) {
-      keyControl.enable();
+      keyControl.disable();
+      digitalWrite(LED_BUILTIN, LOW);
     }
   } else {
     if (keyboardPinState == LOW) {
-      keyControl.disable();
+      keyControl.enable();
+      digitalWrite(LED_BUILTIN, HIGH);
     }
   }
 }
 
-// Interrupt on A changing state
+// Release keypresses after some amount of time passes after the last keypress.
+// Does not release keypresses if the rotary encoder continues turning.
+//
+// Interrupts are disabled in this function because this is a critical block to
+// be run in the main loop. If interrupts interrupted this code, the value of
+// `lastRotaryTurnTime` would be undefined, and the behavior of the `if` block
+// would become nondeterministic.
+void maybeExpireKeyPress() {
+  noInterrupts();
+
+  unsigned long currentTime = millis();
+  // Times are unsigned. Compare first before subtracting.
+  if (currentTime > lastRotaryTurnTime &&
+      currentTime - lastRotaryTurnTime >= KEYBOARD_RELEASE_DELAY_MS) {
+    keyControl.release();
+  }
+
+  interrupts();
+}
+
+// ## Interrupts ##
+
+// Interrupt on A changing state. Move left.
 void doEncoderA() {
   // In the example code, both interrupt handlers had a
   // `if (rotating) { delay(1); }` line to help with debouncing. This is
@@ -100,19 +128,28 @@ void doEncoderA() {
 
     // adjust counter + if A leads B
     if (A_set && !B_set) {
-      encoderPos += 1;
+#ifdef DEBUG_MODE
+      incrementPosition();
+#endif
+
+      keyControl.right();
+      lastRotaryTurnTime = millis();
     }
   }
 }
 
-// Interrupt on B changing state, same as A above
+// Interrupt on B changing state, same as A above. Move right.
 void doEncoderB() {
   if (digitalRead(encoderPinB) != B_set) {
     B_set = !B_set;
     //  adjust counter - 1 if B leads A
     if (B_set && !A_set) {
-      encoderPos -= 1;
+#ifdef DEBUG_MODE
+      decrementPosition();
+#endif
+
+      keyControl.left();
+      lastRotaryTurnTime = millis();
     }
   }
 }
-

@@ -1,3 +1,7 @@
+/**
+   A simple class to manage combined state transitions and keyboard action.
+*/
+
 #ifndef __KEYCONTROL_H__
 #define __KEYCONTROL_H__
 
@@ -14,8 +18,10 @@ class KeyControl {
     void disable();
     boolean isEnabled() const;
     void printCurrentState() const;
+
   private:
     void switchKey(int currentKey, int nextKey);
+    boolean isPressed() const;
 };
 
 #endif
